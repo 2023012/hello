@@ -1,0 +1,208 @@
+import base64
+import datetime
+import hashlib
+import hmac
+import requests
+import six
+import urllib.parse
+import openpyxl
+import datetime
+
+from bs4 import BeautifulSoup
+
+# この部分を書き換えて下さい。
+
+AMAZON_CREDENTIAL = {
+    #セラーID
+    'SELLER_ID': 'あなたのセラーID',
+    #開発者情報のAWSアクセスキー
+    'ACCESS_KEY_ID': 'AWSアクセスキーを入れる',
+    #開発者情報のクライアント機密情報
+    'ACCESS_SECRET': 'クライアント機密情報を入れる',
+    #日本だと下記で固定
+    'MarketplaceId': 'A1VC38T7YXB528',
+    }
+
+#ここは書き換えない
+DOMAIN = 'mws.amazonservices.jp'
+ENDPOINT = '/Products/2011-10-01'
+
+# この部分を書き換えて下さい。
+
+#手数料取得
+def get_fee(fee_asin,fee_price,fee_fba):
+    #タイムスタンプの初期設定
+    timestamp = datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
+    #MWS API 必須パラメータ初期設定
+    data = {
+        'FeesEstimateRequestList.FeesEstimateRequest.1.MarketplaceId': AMAZON_CREDENTIAL['MarketplaceId'],
+        'FeesEstimateRequestList.FeesEstimateRequest.1.IdType' : 'ASIN',
+        'FeesEstimateRequestList.FeesEstimateRequest.1.IdValue' : fee_asin,
+        'FeesEstimateRequestList.FeesEstimateRequest.1.IsAmazonFulfilled' : fee_fba,
+        'FeesEstimateRequestList.FeesEstimateRequest.1.Identifier' : 'request1',
+        'FeesEstimateRequestList.FeesEstimateRequest.1.PriceToEstimateFees.ListingPrice.CurrencyCode' : 'JPY',
+        'FeesEstimateRequestList.FeesEstimateRequest.1.PriceToEstimateFees.ListingPrice.Amount' :fee_price,
+        'AWSAccessKeyId': AMAZON_CREDENTIAL['ACCESS_KEY_ID'],
+        'Action': 'GetMyFeesEstimate',
+        'SellerId': AMAZON_CREDENTIAL['SELLER_ID'],
+        'SignatureMethod': 'HmacSHA256',
+        'SignatureVersion': '2',
+        'Timestamp': timestamp,
+        'Version': '2011-10-01'
+    }
+    #リクエスト作成
+    query_list = list()
+    for k, v in sorted(data.items()):
+        query_list.append('{}={}'.format(k, urllib.parse.quote(v, safe='')))
+    query_string = "&".join(query_list)
+
+    canonical = "{}\n{}\n{}\n{}".format(
+        'POST', DOMAIN, ENDPOINT, query_string
+    )
+
+    h = hmac.new(
+        six.b(AMAZON_CREDENTIAL['ACCESS_SECRET']),
+        six.b(canonical), hashlib.sha256)
+
+    signature = urllib.parse.quote(base64.b64encode(h.digest()), safe='')
+
+    url = 'https://{}{}?{}&Signature={}'.format(
+        DOMAIN, ENDPOINT, query_string, signature)
+    #レスポンス取得
+    response = requests.post(url)
+    soup = BeautifulSoup(response.content.decode(), "lxml")
+    #返り値初期化
+    result_get_fee = dict()
+    try:
+        for script in soup(["script","style"]):
+            script.decompose()
+        text=soup.get_text()
+        #amount=手数料の数字部分、全て返す
+        result_get_fee = [line.strip() for line in text.splitlines()]
+
+    except Exception as err_item:
+            # tryが失敗したとき..
+            result_get_fee = 'itemを取得できませんでした'
+    return result_get_fee
+
+#ASIN使ったデータ取得
+def get_data(search_code):
+    timestamp = datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
+    data = {
+        'AWSAccessKeyId': AMAZON_CREDENTIAL['ACCESS_KEY_ID'],
+        'Action': 'GetCompetitivePricingForASIN',
+        'SellerId': AMAZON_CREDENTIAL['SELLER_ID'],
+        'SignatureMethod': 'HmacSHA256',
+        'MarketplaceId': AMAZON_CREDENTIAL['MarketplaceId'],
+        'SignatureVersion': '2',
+        'Timestamp': timestamp,
+        'Version': '2011-10-01',
+        'ItemCondition': 'NEW',
+        'ExcludeMe': 'true',
+        'ASINList.ASIN.1': search_code
+    }
+
+    query_list = list()
+    for k, v in sorted(data.items()):
+        query_list.append('{}={}'.format(k, urllib.parse.quote(v, safe='')))
+    query_string = "&".join(query_list)
+
+    canonical = "{}\n{}\n{}\n{}".format(
+        'POST', DOMAIN, ENDPOINT, query_string
+    )
+
+    h = hmac.new(
+        six.b(AMAZON_CREDENTIAL['ACCESS_SECRET']),
+        six.b(canonical), hashlib.sha256)
+
+    signature = urllib.parse.quote(base64.b64encode(h.digest()), safe='')
+
+    url = 'https://{}{}?{}&Signature={}'.format(
+        DOMAIN, ENDPOINT, query_string, signature)
+
+    response = requests.post(url)
+    soup = BeautifulSoup(response.content.decode(), "lxml")
+    # print(soup.prettify())
+
+    items = soup.find_all('asin')
+    result_dict = dict()
+
+    try:
+        item_data = soup.find('getcompetitivepricingforasinresult', asin=search_code)
+        # print('item_data', item_data)
+        # asinを取得
+        try:
+            result_asin = item_data.asin.text
+        except Exception as err_asin:
+            print(err_asin)
+            result_asin = 'ASINを取得できませんでした'
+
+        # 価格を取得
+        try:
+            result_price = int(round(float(item_data.amount.text)))
+        except Exception as err_price:
+            print(err_price)
+            result_price = '価格を取得できませんでした'
+
+        result_dict = [result_price]
+
+    except Exception as err_item:
+        # print(err_test)
+        result_test = 'itemを取得できませんでした'
+    return result_dict
+
+
+if __name__ == '__main__':
+        #エクセルファイルの保存先
+        filename ='C:\\test\\data.xlsx'
+        book = openpyxl.load_workbook(filename)
+        sheet = book.worksheets[0]
+        sheet_price = book.worksheets[1]
+        get_date = datetime.date.today()
+        get_time = datetime.datetime.today()
+
+        #仕入れ在庫シートの編集
+        get_asin = []
+        for row in sheet.rows:
+            get_asin.append(
+                row[1].value
+                )
+        del get_asin[0] #最初の「ASIN」という文字列を削除
+        k = 2   #出力する行の設定
+        j = 6   #出力する列の設定
+        total = 0 #総額を取り込む変数
+        gross_profit = 0 #見込粗利益
+        for output in get_asin:
+            #「仕入れ在庫」シート内のASINを使ってデータ取得
+            asin_data = get_data(output)
+            sheet.cell(row = k, column= 6, value=asin_data[0])
+            sheet.cell(row = k, column= 7, value=sheet.cell(row=k,column=5).value * sheet.cell(row=k,column=6).value)
+            total += sheet.cell(row = k, column = 7).value
+            #手数料取得、計算
+            profit = 0
+            get_cart = str(sheet.cell(row = k, column = 6).value)
+            text = "\n".join(line for line in get_fee(output,get_cart,'true') if line)
+            test = []
+            test = text.splitlines()
+            sheet.cell(row = k, column= 8, value=int(float(test[3])))
+            sheet.cell(row = k, column= 9, value=int(float(test[1])) - int(float(test[3])))
+            sheet.cell(row = k, column= 10, value=sheet.cell(row = k, column = 6).value - sheet.cell(row = k, column = 4).value - int(float(test[1])))
+            profit = sheet.cell(row = k, column=10).value * sheet.cell(row = k ,column=5).value
+            gross_profit += profit
+            #出力先の行を下へ移動する
+            k = k+1
+
+        #在庫総額シートの出力
+        i = sheet_price['E2'].value
+        #日付
+        sheet_price.cell(row=i, column=1, value= get_date)
+        #時刻
+        sheet_price.cell(row=i, column=2, value= '{0:%H}:{0:%M}:{0:%S}'.format(datetime.datetime.now()))
+        #在庫総額の出力
+        sheet_price.cell(row=i, column=3, value=total)
+        #在庫見込利益総額の出力
+        sheet_price.cell(row=i, column=4, value=gross_profit)
+        #在庫記録位置の設定
+        sheet_price.cell(row= 2,column=5,value= i+1)
+        #シート保存
+        book.save(filename)
